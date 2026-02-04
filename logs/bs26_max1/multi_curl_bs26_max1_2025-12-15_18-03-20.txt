@@ -1,0 +1,35 @@
+[18:03:20.845] === MultiCurlDownloadTest started at 2025-12-15 18:03:20 ===
+[18:03:20.845] Base URL: https://ateixs.me:443/draco/
+[18:03:20.846] Download dir: C:/Users/Rafael/AppData/LocalLow/Smartness/Draco-RTC\DownloadsTest
+[18:03:20.846] BatchSize: 26 | MaxParallelBatches: 1
+[18:03:20.869] [Batch START] idx 0-25 (26 files) | active=1
+[18:03:20.901] [curl ERR][0-25] DL% UL%  Dled  Uled  Xfers  Live Total     Current  Left    Speed
+[18:03:21.403] [curl ERR][0-25] --  --      0     0    26    26  --:--:-- --:--:-- --:--:--     0      
+[18:03:21.643] [curl ERR][0-25]  66 --  39.3M     0    26    26  --:--:-- --:--:-- --:--:-- 78.0M      
+[18:03:21.645] [curl ERR][0-25] 100 --  58.7M     0    26     0  --:--:-- --:--:-- --:--:-- 78.9M     
+[18:03:21.650] [Batch DONE] idx 0-25 (26 files) in 803 ms | active=0
+[18:03:21.652] [Batch DONE] idx 0-25 (26 files) in 803 ms | active=0
+[18:03:21.675] [Batch START] idx 26-51 (26 files) | active=1
+[18:03:21.712] [curl ERR][26-51] DL% UL%  Dled  Uled  Xfers  Live Total     Current  Left    Speed
+[18:03:22.214] [curl ERR][26-51] --  --      0     0    26    26  --:--:-- --:--:-- --:--:--     0      
+[18:03:22.502] [curl ERR][26-51]  57 --  34.4M     0    26    26  --:--:-- --:--:-- --:--:-- 68.1M      
+[18:03:22.503] [curl ERR][26-51] 100 --  60.4M     0    26     0  --:--:-- --:--:-- --:--:-- 76.1M     
+[18:03:22.509] [Batch DONE] idx 26-51 (26 files) in 855 ms | active=0
+[18:03:22.533] [Batch START] idx 52-77 (26 files) | active=1
+[18:03:22.573] [curl ERR][52-77] DL% UL%  Dled  Uled  Xfers  Live Total     Current  Left    Speed
+[18:03:23.074] [curl ERR][52-77] --  --      0     0    26    26  --:--:-- --:--:-- --:--:--     0      
+[18:03:23.309] [curl ERR][52-77]  65 --  39.8M     0    26    26  --:--:-- --:--:-- --:--:-- 78.8M      
+[18:03:23.311] [curl ERR][52-77] 100 --  61.0M     0    26     0  --:--:-- --:--:-- --:--:-- 82.5M     
+[18:03:23.317] [Batch DONE] idx 52-77 (26 files) in 804 ms | active=0
+[18:03:23.342] [Batch START] idx 78-103 (26 files) | active=1
+[18:03:23.378] [curl ERR][78-103] DL% UL%  Dled  Uled  Xfers  Live Total     Current  Left    Speed
+[18:03:23.880] [curl ERR][78-103] --  --      0     0    26    26  --:--:-- --:--:-- --:--:--     0      
+[18:03:24.107] [curl ERR][78-103]  68 --  44.4M     0    26    26  --:--:-- --:--:-- --:--:-- 88.0M      
+[18:03:24.108] [curl ERR][78-103] 100 --  65.1M     0    26     0  --:--:-- --:--:-- --:--:-- 89.0M     
+[18:03:24.115] [Batch DONE] idx 78-103 (26 files) in 794 ms | active=0
+[18:03:24.137] [Batch START] idx 104-119 (16 files) | active=1
+[18:03:24.170] [curl ERR][104-119] DL% UL%  Dled  Uled  Xfers  Live Total     Current  Left    Speed
+[18:03:24.613] [curl ERR][104-119] --  --      0     0    16    16  --:--:-- --:--:-- --:--:--     0      
+[18:03:24.614] [curl ERR][104-119] 100 --  37.6M     0    16     0  --:--:-- --:--:-- --:--:-- 84.2M     
+[18:03:24.616] [Batch DONE] idx 104-119 (16 files) in 500 ms | active=0
+[18:03:24.617] === MultiCurlDownloadTest finished ===
