@@ -13,6 +13,7 @@ public class AppLauncher : MonoBehaviour
     [Header("Logging (optional)")]
     public bool logStdout = false;
     public bool logStderr = true;
+    public bool logCommandLine = true;
 
     private readonly List<Process> active = new();
 
@@ -40,6 +41,12 @@ public class AppLauncher : MonoBehaviour
             return;
         }
 
+        if (logCommandLine)
+        {
+            Debug.Log($"[AppLauncher] Starting batch {batchStart}-{batchStart + batchCount - 1} " +
+                      $"with command:\n\"{exePath}\" {appArgs}");
+        }
+
         var p = new Process();
         p.StartInfo.FileName = exePath;
         p.StartInfo.Arguments = appArgs;
@@ -62,7 +69,7 @@ public class AppLauncher : MonoBehaviour
                 Debug.LogWarning($"[curl ERR][{batchStart}-{batchStart + batchCount - 1}] {e.Data}");
         };
 
-        // IMPORTANT: Exited runs off the Unity main thread.
+        // Exited roda fora da main thread
         p.Exited += (s, e) =>
         {
             int code = -1;
@@ -105,7 +112,7 @@ public class AppLauncher : MonoBehaviour
 
     private void Update()
     {
-        // Drain completion queue on main thread (Unity-safe)
+        // Processar batches concluídos na main thread
         lock (doneLock)
         {
             while (doneQueue.Count > 0)
@@ -115,10 +122,15 @@ public class AppLauncher : MonoBehaviour
             }
         }
 
-        // Cleanup exited processes
+        // Cleanup dos processos
         for (int i = active.Count - 1; i >= 0; i--)
         {
-            if (active[i] == null) { active.RemoveAt(i); continue; }
+            if (active[i] == null)
+            {
+                active.RemoveAt(i);
+                continue;
+            }
+
             if (active[i].HasExited)
             {
                 try { active[i].Dispose(); } catch { }
