@@ -10,10 +10,14 @@ public class AppLauncher : MonoBehaviour
     [Header("Wiring")]
     public DracoCurl DracoCurl;
 
-    [Header("Logging (optional)")]
+    [Header("Logging")]
     public bool logStdout = false;
     public bool logStderr = true;
     public bool logCommandLine = true;
+
+    [Header("Process watchdog")]
+    [Tooltip("Se > 0, mata o curl se ele não terminar nesse tempo (segundos).")]
+    public float processTimeoutSeconds = 0f;
 
     private readonly List<Process> active = new();
 
@@ -23,6 +27,7 @@ public class AppLauncher : MonoBehaviour
         public int count;
         public int exitCode;
         public string tag;
+        public string reason;     // <- novo: motivo do -1 / falha
     }
 
     private readonly Queue<BatchDone> doneQueue = new();
@@ -36,15 +41,15 @@ public class AppLauncher : MonoBehaviour
         string exePath = Path.Combine(Application.persistentDataPath, "Executables", appName);
         if (!File.Exists(exePath))
         {
-            Debug.LogError($"[AppLauncher] Executable not found: {exePath}");
-            EnqueueDone(batchStart, batchCount, exitCode: -1, tag ?? "missing_exe");
+            string msg = $"[AppLauncher] Executable not found: {exePath}";
+            Debug.LogError(msg);
+            EnqueueDone(batchStart, batchCount, exitCode: -1, tag ?? "missing_exe", reason: msg);
             return;
         }
 
         if (logCommandLine)
         {
-            Debug.Log($"[AppLauncher] Starting batch {batchStart}-{batchStart + batchCount - 1} " +
-                      $"with command:\n\"{exePath}\" {appArgs}");
+            Debug.Log($"[AppLauncher] Starting batch {batchStart}-{batchStart + batchCount - 1} with command:\n\"{exePath}\" {appArgs}");
         }
 
         var p = new Process();
@@ -55,6 +60,8 @@ public class AppLauncher : MonoBehaviour
         p.StartInfo.RedirectStandardError = true;
         p.StartInfo.CreateNoWindow = true;
         p.EnableRaisingEvents = true;
+
+        var localTag = tag ?? "batch";
 
         // Optional logging
         p.OutputDataReceived += (s, e) =>
@@ -75,7 +82,7 @@ public class AppLauncher : MonoBehaviour
             int code = -1;
             try { code = p.ExitCode; } catch { /* ignore */ }
 
-            EnqueueDone(batchStart, batchCount, code, tag ?? "batch");
+            EnqueueDone(batchStart, batchCount, code, localTag, reason: "process_exited");
         };
 
         try
@@ -83,20 +90,51 @@ public class AppLauncher : MonoBehaviour
             bool ok = p.Start();
             if (!ok) throw new Exception("Process did not start.");
 
+            Debug.Log($"[AppLauncher] PID={p.Id} started for batch {batchStart}-{batchStart + batchCount - 1}");
+
             p.BeginOutputReadLine();
             p.BeginErrorReadLine();
 
             active.Add(p);
+
+            // Watchdog opcional: mata curl travado
+            if (processTimeoutSeconds > 0f)
+            {
+                StartCoroutine(KillIfTimeout(p, batchStart, batchCount, localTag, processTimeoutSeconds));
+            }
         }
         catch (Exception ex)
         {
-            Debug.LogError($"[AppLauncher] Failed to start process: {ex.Message}");
+            string msg = $"[AppLauncher] Failed to start process: {ex.Message}";
+            Debug.LogError(msg);
             try { p.Dispose(); } catch { }
-            EnqueueDone(batchStart, batchCount, exitCode: -1, tag ?? "start_fail");
+            EnqueueDone(batchStart, batchCount, exitCode: -1, localTag, reason: msg);
         }
     }
 
-    private void EnqueueDone(int start, int count, int exitCode, string tag)
+    private System.Collections.IEnumerator KillIfTimeout(Process p, int start, int count, string tag, float timeoutS)
+    {
+        float t0 = Time.realtimeSinceStartup;
+        while (p != null && !p.HasExited)
+        {
+            if (Time.realtimeSinceStartup - t0 > timeoutS)
+            {
+                try
+                {
+                    Debug.LogWarning($"[AppLauncher] TIMEOUT killing PID={p.Id} batch {start}-{start + count - 1}");
+                    p.Kill();
+                }
+                catch { /* ignore */ }
+
+                // sinaliza falha
+                EnqueueDone(start, count, exitCode: -1, tag, reason: $"timeout>{timeoutS}s");
+                yield break;
+            }
+            yield return null;
+        }
+    }
+
+    private void EnqueueDone(int start, int count, int exitCode, string tag, string reason)
     {
         lock (doneLock)
         {
@@ -105,32 +143,28 @@ public class AppLauncher : MonoBehaviour
                 start = start,
                 count = count,
                 exitCode = exitCode,
-                tag = tag
+                tag = tag,
+                reason = reason
             });
         }
     }
 
     private void Update()
     {
-        // Processar batches concluídos na main thread
+        // Drain completion queue on main thread
         lock (doneLock)
         {
             while (doneQueue.Count > 0)
             {
                 var done = doneQueue.Dequeue();
-                DracoCurl?.AdvanceBatch(done.start, done.count, done.exitCode);
+                DracoCurl?.AdvanceBatch(done.start, done.count, done.exitCode, done.tag, done.reason);
             }
         }
 
-        // Cleanup dos processos
+        // Cleanup exited processes
         for (int i = active.Count - 1; i >= 0; i--)
         {
-            if (active[i] == null)
-            {
-                active.RemoveAt(i);
-                continue;
-            }
-
+            if (active[i] == null) { active.RemoveAt(i); continue; }
             if (active[i].HasExited)
             {
                 try { active[i].Dispose(); } catch { }

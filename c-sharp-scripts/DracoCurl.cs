@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
 using UnityEngine;
@@ -7,34 +6,25 @@ using Draco;
 
 public class DracoCurl : MonoBehaviour
 {
-    // -------------------------
-    // Server / paths
-    // -------------------------
     [Header("Server")]
     public string HostPath = "ateixs.me";
     private const string _http = "https://";
     private string _port = "443";
-    private string fullPath;              // ex: "https://ateixs.me:443/draco/"
+    private string fullPath;
 
     [Header("Content paths")]
-    [Tooltip("Lista de subpastas de conteúdo no servidor (ex: \"draco/\").")]
-    [SerializeField] private string[] _files;  // conteúdo: "draco/", "seq1/", etc.
-    [Tooltip("Índice dentro de _files que está sendo usado.")]
+    [SerializeField] private string[] _files;
     [SerializeField] private int currentFiles = 0;
 
     [Header("Slices / Ports")]
-    [Tooltip("Lista de portas/slices disponíveis (ex: 5002, 443, 5001).")]
     [SerializeField] private int[] sliceAddressList;
     private int currentSlice = 0;
 
-    // -------------------------
-    // Playback
-    // -------------------------
     [Header("Playback")]
     public float FPS = 30f;
-    private float inverseFPS;     // alvo em ms (1000 / FPS)
+    private float inverseFPS;
 
-    public int batchSize = 30;    // nº de arquivos por batch de download
+    public int batchSize = 30;
     private int loadedFilesMaxSize = 90;
 
     [Header("Parallel Download")]
@@ -42,9 +32,6 @@ public class DracoCurl : MonoBehaviour
     private int activeBatches = 0;
     private int nextDownloadIndex = 0;
 
-    // -------------------------
-    // Sequence / state
-    // -------------------------
     [Header("References")]
     public AppLauncher appLauncher;
     public DracoToParticles particlesScript;
@@ -52,7 +39,6 @@ public class DracoCurl : MonoBehaviour
     [Header("Sequence config")]
     [SerializeField] private int numberOfFiles = 300;
 
-    // buffer indexado: 0..numberOfFiles-1
     private string[] dracoFiles;
     private Mesh[] decodedMeshes;
 
@@ -65,47 +51,44 @@ public class DracoCurl : MonoBehaviour
     private int downloadedCount = 0;
     private bool playerReady = true;
 
-    private enum readiness
-    {
-        None,
-        Downloading,
-        Downloaded,
-        Decoding,
-        Loaded
-    }
-
+    private enum readiness { None, Downloading, Downloaded, Decoding, Loaded }
     [SerializeField] private readiness[] filesReadinessStatus;
 
-    // =========================================================
-    // Lifecycle
-    // =========================================================
+    // -------------------- Debug / Watchdogs --------------------
+    [Header("Debug / Watchdog")]
+    public float debugInterval = 1.0f;
+    public float stallSecondsToSkip = 2.0f;      // se travar no playIndex por > X s, pula
+    public bool verbosePlayBlockLogs = false;
+
+    private float _debugLastPrint = 0f;
+    private float _lastProgressTime = 0f;
+    private int _lastPlayIndex = -1;
+    private float _playIndexStallStart = 0f;
 
     private void Awake()
     {
-        // Validação mínima para evitar Null/Index errors
         if (_files == null || _files.Length == 0)
         {
-            Debug.LogError("[DracoCurl] _files está vazio. Configure pelo menos um path (ex: \"draco/\") no Inspector.");
+            Debug.LogError("[DracoCurl] _files vazio. Configure pelo menos um path (ex: \"draco/\").");
             enabled = false;
             return;
         }
 
-        if (currentFiles < 0 || currentFiles >= _files.Length)
-            currentFiles = 0;
+        currentFiles = Mathf.Clamp(currentFiles, 0, _files.Length - 1);
 
         if (string.IsNullOrEmpty(HostPath))
             HostPath = "localhost";
 
-        ResetHostPath(); // monta fullPath = https://HostPath:port/files[currentFiles]
+        ResetHostPath();
     }
 
     private void OnEnable()
     {
         inverseFPS = 1000f / Mathf.Max(1f, FPS);
         startTime = Time.realtimeSinceStartup;
+        _lastProgressTime = Time.realtimeSinceStartup;
 
         currentMesh = new Mesh();
-
         UpdateDracoFiles();
     }
 
@@ -114,22 +97,16 @@ public class DracoCurl : MonoBehaviour
         appLauncher?.KillAllProcesses();
     }
 
-    // =========================================================
-    // Setup inicial
-    // =========================================================
     private void UpdateDracoFiles()
     {
-        // 1) lista de nomes de arquivos (1000.drc ... )
         dracoFiles = new string[numberOfFiles];
         for (int i = 0; i < numberOfFiles; i++)
             dracoFiles[i] = (1000 + i) + ".drc";
 
-        // 2) estados
         filesReadinessStatus = new readiness[numberOfFiles];
         for (int i = 0; i < numberOfFiles; i++)
             filesReadinessStatus[i] = readiness.None;
 
-        // 3) buffer de meshes
         if (decodedMeshes != null)
         {
             for (int i = 0; i < decodedMeshes.Length; i++)
@@ -140,7 +117,6 @@ public class DracoCurl : MonoBehaviour
         }
         decodedMeshes = new Mesh[numberOfFiles];
 
-        // 4) contadores
         loadedFilesMaxSize = Mathf.Min(numberOfFiles / 3, batchSize * 2);
         downloadedCount = 0;
         decodedCount = 0;
@@ -153,10 +129,9 @@ public class DracoCurl : MonoBehaviour
 
         playerReady = true;
 
-        // 5) pasta de Downloads
         Directory.CreateDirectory(Path.Combine(Application.persistentDataPath, "Downloads"));
 
-        Debug.Log($"[DracoCurl] Inicializado. fullPath={fullPath}, numberOfFiles={numberOfFiles}, loadedFilesMaxSize={loadedFilesMaxSize}");
+        Debug.Log($"[DracoCurl] Init fullPath={fullPath} numberOfFiles={numberOfFiles} loadedFilesMaxSize={loadedFilesMaxSize}");
     }
 
     // =========================================================
@@ -167,11 +142,10 @@ public class DracoCurl : MonoBehaviour
         if (dracoFiles == null) return;
         if (string.IsNullOrEmpty(fullPath))
         {
-            Debug.LogError("[DracoCurl] fullPath vazio. Verifique HostPath / _files no Inspector.");
+            Debug.LogError("[DracoCurl] fullPath vazio. Verifique HostPath/_files.");
             return;
         }
 
-        // se já temos muitos arquivos prontos, não baixar mais
         while (activeBatches < maxParallelBatches && downloadedCount < loadedFilesMaxSize)
         {
             int start = FindNextNoneIndex(nextDownloadIndex);
@@ -180,16 +154,20 @@ public class DracoCurl : MonoBehaviour
             int end = Mathf.Min(start + batchSize, numberOfFiles);
             int count = end - start;
 
-            // marca como Downloading
             for (int i = start; i < end; i++)
                 filesReadinessStatus[i] = readiness.Downloading;
 
-            string appArgs = "--http3 --parallel";
+            // DICA: args mais robustos
+            // --fail: não cria arquivo 0 bytes em HTTP error (e força exit code != 0)
+            // --connect-timeout / --max-time: evita curl preso
+            // --retry: tenta de novo em falhas transitórias
+            string appArgs = "--http3 --parallel --fail --connect-timeout 5 --max-time 30 --retry 2 --retry-delay 0";
+
             for (int i = start; i < end; i++)
             {
                 string filename = dracoFiles[i];
                 string outPath = Path.Combine(Application.persistentDataPath, "Downloads", filename);
-                string url = fullPath + filename;  // fullPath já termina com "/"
+                string url = fullPath + filename;
 
                 appArgs += $" -o \"{outPath}\" \"{url}\"";
             }
@@ -212,22 +190,23 @@ public class DracoCurl : MonoBehaviour
         return -1;
     }
 
-    /// Chamado pelo AppLauncher (no main thread) quando um batch termina.
-    public void AdvanceBatch(int batchStart, int batchCount, int exitCode)
+    // Recebe agora tag+reason para explicar exitCode=-1
+    public void AdvanceBatch(int batchStart, int batchCount, int exitCode, string tag, string reason)
     {
+        Debug.Log($"[AdvanceBatch] tag={tag} start={batchStart} count={batchCount} exitCode={exitCode} reason={reason} activeBatches(before)={activeBatches}");
+
         activeBatches = Mathf.Max(0, activeBatches - 1);
 
         if (exitCode != 0)
         {
-            // falha: volta pra None para poder tentar de novo
             for (int i = batchStart; i < batchStart + batchCount && i < numberOfFiles; i++)
                 filesReadinessStatus[i] = readiness.None;
 
-            Debug.LogWarning($"[DracoCurl] Batch {batchStart}-{batchStart + batchCount - 1} FAILED (exitCode={exitCode})");
+            Debug.LogWarning($"[DracoCurl] Batch {batchStart}-{batchStart + batchCount - 1} FAILED (exitCode={exitCode}) reason={reason}");
+            TouchProgress();
             return;
         }
 
-        // sucesso: marca Downloaded
         int marked = 0;
         for (int i = batchStart; i < batchStart + batchCount && i < numberOfFiles; i++)
         {
@@ -239,7 +218,7 @@ public class DracoCurl : MonoBehaviour
         }
 
         downloadedCount += marked;
-        // Debug.Log($"[DracoCurl] Batch {batchStart}-{batchStart + batchCount - 1} OK, Downloaded={marked}");
+        TouchProgress();
     }
 
     // =========================================================
@@ -249,22 +228,39 @@ public class DracoCurl : MonoBehaviour
     {
         if (decodedCount >= loadedFilesMaxSize) return;
 
+        // 1) tentativa rápida
         int scanLimit = Mathf.Min(numberOfFiles, batchSize * 2);
-        for (int k = 0; k < scanLimit; k++)
+        int foundIdx = FindDownloadedInWindow(currentLoadedNumber, scanLimit);
+
+        // 2) se não achou mas existe Downloaded no sistema, faz full scan
+        if (foundIdx < 0)
         {
-            int i = (currentLoadedNumber + k) % numberOfFiles;
-
-            if (filesReadinessStatus[i] == readiness.Downloaded)
+            int totalDownloaded = CountState(readiness.Downloaded);
+            if (totalDownloaded > 0)
             {
-                filesReadinessStatus[i] = readiness.Decoding;
-                downloadedCount = Mathf.Max(0, downloadedCount - 1);
-
-                currentLoadedNumber = (i + 1) % numberOfFiles;
-
-                DecodeMeshAtIndex(i);
-                break;
+                foundIdx = FindDownloadedInWindow(currentLoadedNumber, numberOfFiles);
             }
         }
+
+        if (foundIdx < 0) return;
+
+        filesReadinessStatus[foundIdx] = readiness.Decoding;
+        downloadedCount = Mathf.Max(0, downloadedCount - 1);
+
+        currentLoadedNumber = (foundIdx + 1) % numberOfFiles;
+        DecodeMeshAtIndex(foundIdx);
+    }
+
+    private int FindDownloadedInWindow(int startIndex, int window)
+    {
+        int limit = Mathf.Min(window, numberOfFiles);
+        for (int k = 0; k < limit; k++)
+        {
+            int i = (startIndex + k) % numberOfFiles;
+            if (filesReadinessStatus[i] == readiness.Downloaded)
+                return i;
+        }
+        return -1;
     }
 
     private async void DecodeMeshAtIndex(int index)
@@ -275,6 +271,7 @@ public class DracoCurl : MonoBehaviour
 
         if (stream == null)
         {
+            Debug.LogWarning($"[Decode] stream null idx={index} file={fileName} -> volta Downloaded");
             filesReadinessStatus[index] = readiness.Downloaded;
             downloadedCount += 1;
             await Task.Delay(1);
@@ -294,11 +291,15 @@ public class DracoCurl : MonoBehaviour
 
             filesReadinessStatus[index] = readiness.Loaded;
             decodedCount += 1;
+
+            Debug.Log($"[Decode] OK idx={index} file={fileName} vtx={tempMesh.vertexCount}");
+            TouchProgress();
         }
         catch (Exception ex)
         {
-            Debug.LogError($"[DecodeMeshAtIndex] decode failed idx={index}: {ex.Message}");
+            Debug.LogError($"[Decode] FAIL idx={index} file={fileName}: {ex.Message}");
             filesReadinessStatus[index] = readiness.None;
+            TouchProgress();
         }
     }
 
@@ -318,7 +319,6 @@ public class DracoCurl : MonoBehaviour
                 return null;
             }
         }
-
         return null;
     }
 
@@ -327,10 +327,14 @@ public class DracoCurl : MonoBehaviour
     // =========================================================
     private async void PlaySingleFile()
     {
-        playerReady = false;
+        if (currentMesh == null || particlesScript == null)
+        {
+            Debug.LogWarning("[PlaySingleFile] currentMesh or particlesScript is null.");
+            playerReady = true;
+            return;
+        }
 
-        if (currentMesh != null && particlesScript != null)
-            particlesScript.Set(currentMesh);
+        particlesScript.Set(currentMesh);
 
         float elapsedS = Time.realtimeSinceStartup - startTime;
         float elapsedMS = elapsedS * 1000f;
@@ -354,8 +358,19 @@ public class DracoCurl : MonoBehaviour
         int i = currentPlayingNumber;
 
         if (!playerReady) return;
-        if (filesReadinessStatus[i] != readiness.Loaded) return;
-        if (decodedMeshes[i] == null) return;
+
+        if (filesReadinessStatus[i] != readiness.Loaded)
+        {
+            if (verbosePlayBlockLogs)
+                Debug.Log($"[PLAY-BLOCK] idx={i} state={filesReadinessStatus[i]} LoadedTotal={CountState(readiness.Loaded)} DownloadedTotal={CountState(readiness.Downloaded)}");
+            return;
+        }
+
+        if (decodedMeshes[i] == null)
+        {
+            Debug.LogWarning($"[PLAY-BLOCK] idx={i} está Loaded mas decodedMeshes[idx] é null");
+            return;
+        }
 
         playerReady = false;
 
@@ -368,26 +383,78 @@ public class DracoCurl : MonoBehaviour
 
         currentPlayingNumber = (i + 1) % numberOfFiles;
 
+        Debug.Log($"[Play] frame={i} OK next={currentPlayingNumber}");
+        TouchProgress();
+
         PlaySingleFile();
     }
 
     // =========================================================
-    // Public controls (UI)
+    // Watchdogs
     // =========================================================
-    public void SetNewIP(string newIP)
+    private void TouchProgress()
     {
-        HostPath = newIP;
-        ResetHostPath();
+        _lastProgressTime = Time.realtimeSinceStartup;
     }
 
-    public void SetNewPort(string newPort)
+    private int CountState(readiness r)
     {
-        _port = newPort;
-        ResetHostPath();
+        int c = 0;
+        for (int i = 0; i < filesReadinessStatus.Length; i++)
+            if (filesReadinessStatus[i] == r) c++;
+        return c;
     }
+
+    private int FindNextLoadedIndex(int startFrom)
+    {
+        for (int k = 0; k < numberOfFiles; k++)
+        {
+            int i = (startFrom + k) % numberOfFiles;
+            if (filesReadinessStatus[i] == readiness.Loaded && decodedMeshes[i] != null)
+                return i;
+        }
+        return -1;
+    }
+
+    private void WatchdogStallAndSkipIfNeeded()
+    {
+        // detecta stall do playIndex
+        if (_lastPlayIndex != currentPlayingNumber)
+        {
+            _lastPlayIndex = currentPlayingNumber;
+            _playIndexStallStart = Time.realtimeSinceStartup;
+            return;
+        }
+
+        // playIndex não mudou
+        if (Time.realtimeSinceStartup - _playIndexStallStart < stallSecondsToSkip)
+            return;
+
+        // Se estamos travados, tenta pular para o próximo Loaded
+        int nextLoaded = FindNextLoadedIndex(currentPlayingNumber + 1);
+        if (nextLoaded >= 0)
+        {
+            Debug.LogWarning($"[WATCHDOG] playIndex stuck at {currentPlayingNumber}. Skipping to next Loaded={nextLoaded}");
+            currentPlayingNumber = nextLoaded;
+            _playIndexStallStart = Time.realtimeSinceStartup;
+            TouchProgress();
+        }
+        else
+        {
+            // Não há Loaded disponível: talvez download/decode travaram
+            Debug.LogWarning($"[WATCHDOG] playIndex stuck at {currentPlayingNumber} but no Loaded frames available. Downloaded={CountState(readiness.Downloaded)} activeBatches={activeBatches}");
+        }
+    }
+
+    // =========================================================
+    // Public controls
+    // =========================================================
+    public void SetNewIP(string newIP) { HostPath = newIP; ResetHostPath(); }
+    public void SetNewPort(string newPort) { _port = newPort; ResetHostPath(); }
 
     public void SetPortFromSliceList(int slice)
     {
+        if (sliceAddressList == null || sliceAddressList.Length == 0) return;
         currentSlice = Mathf.Clamp(slice, 0, sliceAddressList.Length - 1);
         _port = sliceAddressList[currentSlice].ToString();
         ResetHostPath();
@@ -404,13 +471,12 @@ public class DracoCurl : MonoBehaviour
     {
         if (_files == null || _files.Length == 0)
         {
-            Debug.LogError("[DracoCurl] _files está vazio ao chamar ResetHostPath.");
+            Debug.LogError("[DracoCurl] _files vazio ao ResetHostPath.");
             fullPath = null;
             return;
         }
 
         currentFiles = Mathf.Clamp(currentFiles, 0, _files.Length - 1);
-
         fullPath = _http + HostPath + ":" + _port + "/" + _files[currentFiles];
         if (!fullPath.EndsWith("/")) fullPath += "/";
 
@@ -435,9 +501,6 @@ public class DracoCurl : MonoBehaviour
     // =========================================================
     // Main loop
     // =========================================================
-    private float _debugLastPrint = 0f;
-    public float debugInterval = 1.0f; // em segundos
-
     private void Update()
     {
         if (!enabled || dracoFiles == null) return;
@@ -446,30 +509,14 @@ public class DracoCurl : MonoBehaviour
         TryDecode();
         TryPlay();
 
-        // DEBUG: snapshot de estado a cada 1s
+        WatchdogStallAndSkipIfNeeded();
+
+        // DEBUG: snapshot de estado
         if (Time.time - _debugLastPrint > debugInterval)
         {
             _debugLastPrint = Time.time;
-
-            int none = 0, downloading = 0, downloaded = 0, decoding = 0, loaded = 0;
-            for (int i = 0; i < filesReadinessStatus.Length; i++)
-            {
-                switch (filesReadinessStatus[i])
-                {
-                    case readiness.None: none++; break;
-                    case readiness.Downloading: downloading++; break;
-                    case readiness.Downloaded: downloaded++; break;
-                    case readiness.Decoding: decoding++; break;
-                    case readiness.Loaded: loaded++; break;
-                }
-            }
-
-            Debug.Log(
-                $"[STATE] activeBatches={activeBatches} " +
-                $"downloadedCount={downloadedCount} decodedCount={decodedCount} " +
-                $"playIndex={currentPlayingNumber} " +
-                $"None={none} Down={downloading} Dled={downloaded} Dec={decoding} Loaded={loaded}"
-            );
+            Debug.Log($"[STATE] activeBatches={activeBatches} downloadedCount={downloadedCount} decodedCount={decodedCount} playIndex={currentPlayingNumber} " +
+                      $"None={CountState(readiness.None)} Down={CountState(readiness.Downloading)} Dled={CountState(readiness.Downloaded)} Dec={CountState(readiness.Decoding)} Loaded={CountState(readiness.Loaded)}");
         }
     }
 }
