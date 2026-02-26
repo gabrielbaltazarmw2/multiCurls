@@ -435,6 +435,9 @@ public class DracoCurl : MonoBehaviour
     // =========================================================
     // Main loop
     // =========================================================
+    private float _debugLastPrint = 0f;
+    public float debugInterval = 1.0f; // em segundos
+
     private void Update()
     {
         if (!enabled || dracoFiles == null) return;
@@ -442,5 +445,31 @@ public class DracoCurl : MonoBehaviour
         TryStartDownloadBatches();
         TryDecode();
         TryPlay();
+
+        // DEBUG: snapshot de estado a cada 1s
+        if (Time.time - _debugLastPrint > debugInterval)
+        {
+            _debugLastPrint = Time.time;
+
+            int none = 0, downloading = 0, downloaded = 0, decoding = 0, loaded = 0;
+            for (int i = 0; i < filesReadinessStatus.Length; i++)
+            {
+                switch (filesReadinessStatus[i])
+                {
+                    case readiness.None: none++; break;
+                    case readiness.Downloading: downloading++; break;
+                    case readiness.Downloaded: downloaded++; break;
+                    case readiness.Decoding: decoding++; break;
+                    case readiness.Loaded: loaded++; break;
+                }
+            }
+
+            Debug.Log(
+                $"[STATE] activeBatches={activeBatches} " +
+                $"downloadedCount={downloadedCount} decodedCount={decodedCount} " +
+                $"playIndex={currentPlayingNumber} " +
+                $"None={none} Down={downloading} Dled={downloaded} Dec={decoding} Loaded={loaded}"
+            );
+        }
     }
 }
