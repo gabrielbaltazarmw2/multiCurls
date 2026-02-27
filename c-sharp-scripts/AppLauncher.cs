@@ -1,195 +1,175 @@
 using UnityEngine;
 using System;
-using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
-using Debug = UnityEngine.Debug;
+using System.Diagnostics;
+using System.Threading.Tasks;
+using System.Collections.Generic;
 
+/// <summary>
+/// Manages a pool of external processes (curl instances) for parallel downloads.
+/// Each slot in the pool can run one process at a time.
+/// </summary>
 public class AppLauncher : MonoBehaviour
 {
-    [Header("Wiring")]
-    public DracoCurl DracoCurl;
+    // ─────────────────────────────────────────────────────────────
+    //  Configuration
+    // ─────────────────────────────────────────────────────────────
 
-    [Header("Logging")]
-    public bool logStdout = false;
-    public bool logStderr = true;
-    public bool logCommandLine = true;
+    [Header("Process Pool")]
+    [Tooltip("Maximum number of processes that can run simultaneously.")]
+    [SerializeField] private int poolSize = 4;
 
-    [Header("Process watchdog")]
-    [Tooltip("Se > 0, mata o curl se ele n�o terminar nesse tempo (segundos).")]
-    public float processTimeoutSeconds = 0f;
+    // ─────────────────────────────────────────────────────────────
+    //  Internal state
+    // ─────────────────────────────────────────────────────────────
 
-    private readonly List<Process> active = new();
+    private Process[] pool;
+    private StreamWriter[] messageStreams;
+    private bool[] slotBusy;
 
-    private struct BatchDone
+    // Callback invoked when a slot finishes: Action<slotIndex>
+    private Action<int>[] onSlotFinished;
+
+    // ─────────────────────────────────────────────────────────────
+    //  Public API
+    // ─────────────────────────────────────────────────────────────
+
+    public int PoolSize => poolSize;
+
+    private void Awake()
     {
-        public int start;
-        public int count;
-        public int exitCode;
-        public string tag;
-        public string reason;     // <- novo: motivo do -1 / falha
+        InitPool();
     }
 
-    private readonly Queue<BatchDone> doneQueue = new();
-    private readonly object doneLock = new();
+    /// <summary>
+    /// Initializes (or re-initializes) the process pool with the current poolSize.
+    /// </summary>
+    public void InitPool()
+    {
+        KillAll();
+
+        pool            = new Process[poolSize];
+        messageStreams   = new StreamWriter[poolSize];
+        slotBusy        = new bool[poolSize];
+        onSlotFinished  = new Action<int>[poolSize];
+
+        Debug.Log($"[AppLauncher] Pool initialized with {poolSize} slots.");
+    }
 
     /// <summary>
-    /// Starts one curl process to download a batch.
+    /// Launches a process in the first available slot.
     /// </summary>
-    public void StartBatch(string appName, string appArgs, int batchStart, int batchCount, string tag = null)
+    /// <param name="slotIndex">Which pool slot to use.</param>
+    /// <param name="appName">Executable name (looked up inside the Executables folder).</param>
+    /// <param name="appArgs">Arguments to pass to the executable.</param>
+    /// <param name="onFinished">Callback invoked when the process writes to stdout (batch done signal).</param>
+    public async void StartProcess(int slotIndex, string appName, string appArgs, Action<int> onFinished)
     {
-        string exePath = Path.Combine(Application.persistentDataPath, "Executables", appName);
-        if (!File.Exists(exePath))
+        if (slotIndex < 0 || slotIndex >= poolSize)
         {
-            string msg = $"[AppLauncher] Executable not found: {exePath}";
-            Debug.LogError(msg);
-            EnqueueDone(batchStart, batchCount, exitCode: -1, tag ?? "missing_exe", reason: msg);
+            Debug.LogError($"[AppLauncher] Invalid slot index {slotIndex}.");
             return;
         }
 
-        if (logCommandLine)
+        // Wait for a previous process on this slot to finish
+        while (pool[slotIndex] != null && !pool[slotIndex].HasExited)
         {
-            Debug.Log($"[AppLauncher] Starting batch {batchStart}-{batchStart + batchCount - 1} with command:\n\"{exePath}\" {appArgs}");
+            await Task.Delay(5);
         }
 
-        var p = new Process();
-        p.StartInfo.FileName = exePath;
-        p.StartInfo.Arguments = appArgs;
-        p.StartInfo.UseShellExecute = false;
-        p.StartInfo.RedirectStandardOutput = true;
-        p.StartInfo.RedirectStandardError = true;
-        p.StartInfo.CreateNoWindow = true;
-        p.EnableRaisingEvents = true;
-
-        var localTag = tag ?? "batch";
-
-        // Optional logging
-        p.OutputDataReceived += (s, e) =>
-        {
-            if (logStdout && !string.IsNullOrWhiteSpace(e.Data))
-                Debug.Log($"[curl OUT][{batchStart}-{batchStart + batchCount - 1}] {e.Data}");
-        };
-
-        p.ErrorDataReceived += (s, e) =>
-        {
-            if (logStderr && !string.IsNullOrWhiteSpace(e.Data))
-                Debug.LogWarning($"[curl ERR][{batchStart}-{batchStart + batchCount - 1}] {e.Data}");
-        };
-
-        // Exited roda fora da main thread
-        p.Exited += (s, e) =>
-        {
-            int code = -1;
-            try { code = p.ExitCode; } catch { /* ignore */ }
-
-            EnqueueDone(batchStart, batchCount, code, localTag, reason: "process_exited");
-        };
+        onSlotFinished[slotIndex] = onFinished;
 
         try
         {
-            bool ok = p.Start();
-            if (!ok) throw new Exception("Process did not start.");
+            var p = new Process();
+            p.EnableRaisingEvents = false;
+            p.StartInfo.FileName               = Application.persistentDataPath + "/Executables/" + appName;
+            p.StartInfo.Arguments              = appArgs;
+            p.StartInfo.UseShellExecute        = false;
+            p.StartInfo.RedirectStandardOutput = true;
+            p.StartInfo.RedirectStandardInput  = true;
+            p.StartInfo.RedirectStandardError  = true;
+            p.StartInfo.CreateNoWindow         = true;
 
-            Debug.Log($"[AppLauncher] PID={p.Id} started for batch {batchStart}-{batchStart + batchCount - 1}");
+            // Capture slot index for use inside the lambda
+            int capturedSlot = slotIndex;
+            p.OutputDataReceived += (sender, e) => OnDataReceived(capturedSlot, e);
+            p.ErrorDataReceived  += (sender, e) => OnErrorReceived(capturedSlot, e);
 
+            p.Start();
             p.BeginOutputReadLine();
             p.BeginErrorReadLine();
 
-            active.Add(p);
+            pool[slotIndex]           = p;
+            messageStreams[slotIndex] = p.StandardInput;
+            slotBusy[slotIndex]       = true;
 
-            // Watchdog opcional: mata curl travado
-            if (processTimeoutSeconds > 0f)
-            {
-                StartCoroutine(KillIfTimeout(p, batchStart, batchCount, localTag, processTimeoutSeconds));
-            }
+            Debug.Log($"[AppLauncher] Slot {slotIndex} started process '{appName}'.");
         }
-        catch (Exception ex)
+        catch (Exception e)
         {
-            string msg = $"[AppLauncher] Failed to start process: {ex.Message}";
-            Debug.LogError(msg);
-            try { p.Dispose(); } catch { }
-            EnqueueDone(batchStart, batchCount, exitCode: -1, localTag, reason: msg);
+            slotBusy[slotIndex] = false;
+            Debug.LogError($"[AppLauncher] Slot {slotIndex} failed to launch '{appName}': {e.Message}");
         }
     }
 
-    private System.Collections.IEnumerator KillIfTimeout(Process p, int start, int count, string tag, float timeoutS)
+    /// <summary>
+    /// Returns true if the given slot is available (not running a process).
+    /// </summary>
+    public bool IsSlotFree(int slotIndex)
     {
-        float t0 = Time.realtimeSinceStartup;
-        while (p != null && !p.HasExited)
-        {
-            if (Time.realtimeSinceStartup - t0 > timeoutS)
-            {
-                try
-                {
-                    Debug.LogWarning($"[AppLauncher] TIMEOUT killing PID={p.Id} batch {start}-{start + count - 1}");
-                    p.Kill();
-                }
-                catch { /* ignore */ }
-
-                // sinaliza falha
-                EnqueueDone(start, count, exitCode: -1, tag, reason: $"timeout>{timeoutS}s");
-                yield break;
-            }
-            yield return null;
-        }
+        if (slotIndex < 0 || slotIndex >= poolSize) return false;
+        return pool[slotIndex] == null || pool[slotIndex].HasExited;
     }
 
-    private void EnqueueDone(int start, int count, int exitCode, string tag, string reason)
+    /// <summary>
+    /// Kills the process running in the specified slot.
+    /// </summary>
+    public void KillSlot(int slotIndex)
     {
-        lock (doneLock)
+        if (slotIndex < 0 || slotIndex >= poolSize) return;
+        if (pool[slotIndex] != null && !pool[slotIndex].HasExited)
         {
-            doneQueue.Enqueue(new BatchDone
-            {
-                start = start,
-                count = count,
-                exitCode = exitCode,
-                tag = tag,
-                reason = reason
-            });
+            pool[slotIndex].Kill();
+            Debug.Log($"[AppLauncher] Slot {slotIndex} process killed.");
         }
+        slotBusy[slotIndex] = false;
     }
 
-    private void Update()
+    /// <summary>
+    /// Kills all running processes in the pool.
+    /// </summary>
+    public void KillAll()
     {
-        // Drain completion queue on main thread
-        lock (doneLock)
+        if (pool == null) return;
+        for (int i = 0; i < pool.Length; i++)
         {
-            while (doneQueue.Count > 0)
-            {
-                var done = doneQueue.Dequeue();
-                DracoCurl?.AdvanceBatch(done.start, done.count, done.exitCode, done.tag, done.reason);
-            }
+            KillSlot(i);
         }
-
-        // Cleanup exited processes
-        for (int i = active.Count - 1; i >= 0; i--)
-        {
-            if (active[i] == null) { active.RemoveAt(i); continue; }
-            if (active[i].HasExited)
-            {
-                try { active[i].Dispose(); } catch { }
-                active.RemoveAt(i);
-            }
-        }
+        Debug.Log("[AppLauncher] All processes killed.");
     }
 
-    public void KillAllProcesses()
+    // ─────────────────────────────────────────────────────────────
+    //  Private helpers
+    // ─────────────────────────────────────────────────────────────
+
+    private void OnDataReceived(int slotIndex, DataReceivedEventArgs e)
     {
-        for (int i = active.Count - 1; i >= 0; i--)
-        {
-            try
-            {
-                var p = active[i];
-                if (p != null && !p.HasExited) p.Kill();
-                p?.Dispose();
-            }
-            catch { }
-        }
-        active.Clear();
+        // curl outputs a line when the transfer finishes – treat any output as "batch done"
+        if (string.IsNullOrEmpty(e.Data)) return;
+
+        slotBusy[slotIndex] = false;
+        onSlotFinished[slotIndex]?.Invoke(slotIndex);
+    }
+
+    private void OnErrorReceived(int slotIndex, DataReceivedEventArgs e)
+    {
+        if (!string.IsNullOrEmpty(e.Data))
+            Debug.LogWarning($"[AppLauncher] Slot {slotIndex} stderr: {e.Data}");
     }
 
     private void OnDestroy()
     {
-        KillAllProcesses();
+        KillAll();
     }
 }
