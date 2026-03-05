@@ -2,8 +2,9 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
-using UnityEngine;
 using Draco;
+using Unity.VisualScripting;
+using UnityEngine;
 
 public class DracoCurlOldV2 : MonoBehaviour
 {
@@ -20,7 +21,7 @@ public class DracoCurlOldV2 : MonoBehaviour
     private int currentSlice = 0;
 
     private const string HttpPrefix = "https://";
-    private string _port = "443";
+    private string _port = "5001";
     private string fullPath; // e.g.: https://host:443/path/
 
     // =========================================================
@@ -40,7 +41,7 @@ public class DracoCurlOldV2 : MonoBehaviour
     // References
     // =========================================================
     [Header("References")]
-    public AppLauncher appLauncher;
+    public AppLauncherOldV2 appLauncher;
     public DracoToParticles particlesScript;
     public AnimationFPSCounter counter; // optional (not used in original Update)
 
@@ -250,34 +251,93 @@ public class DracoCurlOldV2 : MonoBehaviour
     // =========================================================
     // Public controls
     // =========================================================
-    public void SetNewIP(string newIP) { HostPath = newIP; ResetHostPath(); }
-    public void SetNewPort(string newPort) { _port = newPort; ResetHostPath(); }
+    //public void SetNewIP(string newIP) { HostPath = newIP; ResetHostPath(); }
+    //public void SetNewPort(string newPort) { _port = newPort; ResetHostPath(); }
+
+    //public void SetPortFromSliceList(int slice)
+    //{
+    //    if (sliceAddressList == null || sliceAddressList.Length == 0) return;
+    //    currentSlice = Mathf.Clamp(slice, 0, sliceAddressList.Length - 1);
+    //    _port = sliceAddressList[currentSlice].ToString();
+    //    ResetHostPath();
+    //}
 
     public void SetPortFromSliceList(int slice)
     {
-        if (sliceAddressList == null || sliceAddressList.Length == 0) return;
-        currentSlice = Mathf.Clamp(slice, 0, sliceAddressList.Length - 1);
+        currentSlice = slice;
         _port = sliceAddressList[currentSlice].ToString();
         ResetHostPath();
+        Debug.Log($"Estou aqui!");
+        Debug.Log($"path: {fullPath}");
+        Debug.Log($"[CLICK] haltDownloading={haltDownloading} downloadedCount={downloadedCount} " +
+          $"loadedMeshes={loadedMeshes?.Count ?? -1} downloadingFrom={downloadingFilesFrom}");
+        //_changer.ChangeSlice(currentSlice);
     }
 
-    public void SetQualityFromQualityList(int quality)
-    {
-        currentFiles = Mathf.Clamp(quality, 0, _files.Length - 1);
-        ResetHostPath();
-    }
+    private int _sessionId = 0; // invalida tasks async antigas
 
-    public void Reconnect()
+    public void SwitchSlice(int slice)
     {
+        Debug.Log($"[SwitchSlice] slice={slice} (before) haltDownloading={haltDownloading} downloadedCount={downloadedCount} loadedMeshes={loadedMeshes?.Count}");
+
+        // 1) invalida decodes/plays antigos (se você adicionar a checagem no async)
+        _sessionId++;
+
+        // 2) mata o curl atual: libera o "haltDownloading preso"
+        appLauncher?.KillProcess();
+
+        // 3) reseta runtime state do pipeline
+        haltDownloading = false;
+        playerReady = true;
+        downloadedCount = 0;
+
+        downloadingFilesFrom = 0;
+        currentLoadedNumber = 0;
+        currentPlayingNumber = 0;
+
+        // 4) limpa fila de meshes (senão mistura slice antigo com novo)
+        if (loadedMeshes != null)
+        {
+            while (loadedMeshes.Count > 0)
+            {
+                var m = loadedMeshes.Dequeue();
+                if (m != null) Destroy(m);
+            }
+        }
+
+        // 5) reseta estados
+        if (filesReadinessStatus != null)
+        {
+            for (int i = 0; i < filesReadinessStatus.Length; i++)
+                filesReadinessStatus[i] = readiness.None;
+        }
+
+        // 6) troca slice/porta e atualiza fullPath
+        SetPortFromSliceList(slice);
+
+        // 7) (opcional) re-gerar dracoFiles/loadedFilesMaxSize (se você quer “hard reset”)
         UpdateDracoFiles();
-        // Original code did not reset pointers aggressively here.
+
+        Debug.Log($"[SwitchSlice] (after) haltDownloading={haltDownloading} downloadedCount={downloadedCount} loadedMeshes={loadedMeshes?.Count} fullPath={fullPath}");
     }
 
-    public void ChangeFramerate(string newFramerate)
-    {
-        if (int.TryParse(newFramerate, out int outFps))
-            FPS = outFps;
-    }
+    //public void SetQualityFromQualityList(int quality)
+    //{
+    //    currentFiles = Mathf.Clamp(quality, 0, _files.Length - 1);
+    //    ResetHostPath();
+    //}
+
+    //public void Reconnect()
+    //{
+    //    UpdateDracoFiles();
+    //    // Original code did not reset pointers aggressively here.
+    //}
+
+    //public void ChangeFramerate(string newFramerate)
+    //{
+    //    if (int.TryParse(newFramerate, out int outFps))
+    //        FPS = outFps;
+    //}
 
     // =========================================================
     // Main loop (single-batch download, in-order decode, in-order play)
@@ -305,7 +365,7 @@ public class DracoCurlOldV2 : MonoBehaviour
                 appArgs += $" -o {outPath} {url}";
             }
 
-            appLauncherOldV2.StartProcess("curl.exe", appArgs);
+            appLauncher.StartProcess("curl.exe", appArgs);
         }
 
         // 2) Decode: if buffer has room and next item is Downloaded, decode it

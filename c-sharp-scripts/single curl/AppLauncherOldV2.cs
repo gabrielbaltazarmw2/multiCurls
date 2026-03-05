@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Threading.Tasks;
 using UnityEngine;
+using Debug = UnityEngine.Debug;
 
 /// <summary>
 /// Launches an external executable (curl.exe) and notifies DracoCurl when the batch finishes.
@@ -59,7 +60,7 @@ public class AppLauncherOldV2 : MonoBehaviour
 
             // Optional: log output for debugging
             _process.OutputDataReceived += OnOutputDataReceived;
-            _process.ErrorDataReceived += OnErrorDataReceived;
+            //_process.ErrorDataReceived += OnErrorDataReceived;
 
             bool started = _process.Start();
             if (!started)
