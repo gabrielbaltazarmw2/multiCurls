@@ -5,7 +5,7 @@ using System.Threading.Tasks;
 using UnityEngine;
 using Draco;
 
-public class DracoCurl : MonoBehaviour
+public class DracoCurlOldV2 : MonoBehaviour
 {
     // =========================================================
     // Server / URL configuration
@@ -305,7 +305,7 @@ public class DracoCurl : MonoBehaviour
                 appArgs += $" -o {outPath} {url}";
             }
 
-            appLauncher.StartProcess("curl.exe", appArgs);
+            appLauncherOldV2.StartProcess("curl.exe", appArgs);
         }
 
         // 2) Decode: if buffer has room and next item is Downloaded, decode it

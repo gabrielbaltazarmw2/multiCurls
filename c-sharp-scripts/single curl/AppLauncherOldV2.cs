@@ -8,10 +8,10 @@ using UnityEngine;
 /// Launches an external executable (curl.exe) and notifies DracoCurl when the batch finishes.
 /// This is the single-process (pre-multi-curl) version: it runs one process at a time.
 /// </summary>
-public class AppLauncher : MonoBehaviour
+public class AppLauncherOldV2 : MonoBehaviour
 {
     [Header("References")]
-    public DracoCurl dracoCurl;
+    public DracoCurlOldV2 dracoCurl;
 
     [Header("Executable")]
     [Tooltip("Folder inside persistentDataPath that contains the executable (e.g., 'Executables').")]
