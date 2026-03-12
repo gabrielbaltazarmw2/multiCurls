@@ -2,9 +2,8 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
-using Draco;
-using Unity.VisualScripting;
 using UnityEngine;
+using Draco;
 
 public class DracoCurlOldV2 : MonoBehaviour
 {
@@ -21,7 +20,7 @@ public class DracoCurlOldV2 : MonoBehaviour
     private int currentSlice = 0;
 
     private const string HttpPrefix = "https://";
-    private string _port = "5001";
+    private string _port = "5002";
     private string fullPath; // e.g.: https://host:443/path/
 
     // =========================================================
@@ -33,8 +32,8 @@ public class DracoCurlOldV2 : MonoBehaviour
     public bool isLoop = true;  // kept for compatibility (not used in original logic)
 
     [Header("Buffering")]
-    public int batchSize = 30;          // how many files per curl batch
-    private int loadedFilesMaxSize = 90; // derived from batchSize & numberOfFiles
+    public int batchSize = 30;            // how many files per curl batch
+    private int loadedFilesMaxSize = 90;  // derived from batchSize & numberOfFiles
     [SerializeField] private int numberOfFiles = 300;
 
     // =========================================================
@@ -48,31 +47,35 @@ public class DracoCurlOldV2 : MonoBehaviour
     // =========================================================
     // Internal state
     // =========================================================
-    private string[] dracoFiles;                // "1000.drc" ... "1299.drc"
-    private Queue<Mesh> loadedMeshes;           // decoded meshes in playback order
+    private string[] dracoFiles;          // "1000.drc" ... "1299.drc"
+    private Queue<Mesh> loadedMeshes;     // decoded meshes in playback order
     private Mesh currentMesh;
     private float startTime = 0f;
 
-    private int currentLoadedNumber = 0;        // next index to decode
-    private int currentPlayingNumber = 0;       // next index to play
-    private int downloadingFilesFrom = 0;       // start index for the next download batch
+    private int currentLoadedNumber = 0;  // next index to decode
+    private int currentPlayingNumber = 0; // next index to play
+    private int downloadingFilesFrom = 0; // start index for the next download batch
 
-    private bool haltDownloading = false;       // blocks starting another curl while one is running
+    private bool haltDownloading = false; // blocks starting another curl while one is running
     private bool playerReady = true;
 
-    private int downloadedCount = 0;            // number of frames in "Downloaded" state
+    private int downloadedCount = 0;      // number of frames in "Downloaded" state
 
     // State machine per frame:
     // None -> (Downloaded by curl batch) -> (Loaded after decode) -> None after playback
     private enum readiness { None, Downloaded, Loaded }
     [SerializeField] private readiness[] filesReadinessStatus;
 
+    // Legacy vars kept (present in original script)
+    private int playIndex, currentPosition;
+    public int PlayIndex { get => playIndex; set => playIndex = value; }
+
     // =========================================================
     // Unity lifecycle
     // =========================================================
     private void OnEnable()
     {
-        // Basic validation
+        // Basic validation (doesn't change pipeline logic, just avoids silent null issues)
         if (_files == null || _files.Length == 0)
         {
             Debug.LogError("[DracoCurl] _files is empty. Configure at least one content path.");
@@ -96,6 +99,9 @@ public class DracoCurlOldV2 : MonoBehaviour
         loadedMeshes = new Queue<Mesh>();
         currentMesh = new Mesh();
 
+        PlayIndex = 0;
+        currentPosition = -1;
+
         inverseFPSms = 1000f / Mathf.Max(1f, FPS);
         startTime = Time.realtimeSinceStartup;
 
@@ -110,6 +116,7 @@ public class DracoCurlOldV2 : MonoBehaviour
         downloadingFilesFrom = 0;
         currentLoadedNumber = 0;
         currentPlayingNumber = 0;
+
         downloadedCount = 0;
         haltDownloading = false;
         playerReady = true;
@@ -120,19 +127,20 @@ public class DracoCurlOldV2 : MonoBehaviour
     // =========================================================
     private void UpdateDracoFiles()
     {
-        // Build file name list (hardcoded pattern: 1000..)
+        // Build file name list: 1000.drc ... (1000 + numberOfFiles - 1).drc
         dracoFiles = new string[numberOfFiles];
         for (int i = 0; i < numberOfFiles; i++)
             dracoFiles[i] = (1000 + i) + ".drc";
 
-        // Ensure state array is correct size
+        // IMPORTANT: keep original behavior:
+        // only reset readiness array if size mismatch (do NOT wipe states on every reconnect)
         if (filesReadinessStatus == null || filesReadinessStatus.Length != numberOfFiles)
+        {
             filesReadinessStatus = new readiness[numberOfFiles];
+            for (int i = 0; i < numberOfFiles; i++)
+                filesReadinessStatus[i] = readiness.None;
+        }
 
-        for (int i = 0; i < numberOfFiles; i++)
-            filesReadinessStatus[i] = readiness.None;
-
-        // Buffer target derived from total and batchSize
         loadedFilesMaxSize = Mathf.Min(numberOfFiles / 3, batchSize * 2);
     }
 
@@ -144,11 +152,11 @@ public class DracoCurlOldV2 : MonoBehaviour
     }
 
     // =========================================================
-    // Download control (curl batches)
+    // Download control (single curl)
     // =========================================================
     /// <summary>
-    /// Called by AppLauncher when the curl process for a batch finishes successfully.
-    /// Marks frames in that batch as Downloaded and unblocks next downloads.
+    /// Called by AppLauncher when curl prints something to stdout (original behavior).
+    /// Marks the current batch as Downloaded and unblocks next download.
     /// </summary>
     public void AdvanceBatch()
     {
@@ -158,86 +166,49 @@ public class DracoCurlOldV2 : MonoBehaviour
             downloadedCount += 1;
         }
 
-        // Move batch start
         downloadingFilesFrom = (downloadingFilesFrom + batchSize < numberOfFiles) ? downloadingFilesFrom + batchSize : 0;
-
         haltDownloading = false;
     }
 
     // =========================================================
-    // Decode
+    // Decode (original FIFO approach)
     // =========================================================
-
     private async void ReadSingleMeshFromFile(string fileName, int position)
     {
         byte[] stream = ReadStreamFromDownloadedFile(fileName);
 
-        if (stream == null)
+        if (stream != null)
         {
-            await Task.Delay(1);
-            return;
-        }
+            var meshDataArray = Mesh.AllocateWritableMeshData(1);
+            await DracoDecoder.DecodeMesh(meshDataArray[0], stream);
 
-        var meshDataArray = Mesh.AllocateWritableMeshData(1);
-        await DracoDecoder.DecodeMesh(meshDataArray[0], stream);
+            Mesh tempMesh = new Mesh();
+            Mesh.ApplyAndDisposeWritableMeshData(meshDataArray, tempMesh);
 
-        Mesh tempMesh = new Mesh();
-        Mesh.ApplyAndDisposeWritableMeshData(meshDataArray, tempMesh);
+            // Attempt to keep enqueue in order based on readiness of previous frame
+            if (position != 0)
+            {
+                while (filesReadinessStatus[position - 1] == readiness.Downloaded)
+                    await Task.Delay(1);
+            }
+            else
+            {
+                while (filesReadinessStatus[numberOfFiles - 1] == readiness.Downloaded)
+                    await Task.Delay(1);
+            }
 
-        // mantém seu gate de ordem (opcional no single-curl, mas ok)
-        if (position != 0)
-        {
-            while (filesReadinessStatus[position - 1] == readiness.Downloaded)
-                await Task.Delay(1);
+            loadedMeshes.Enqueue(tempMesh);
         }
         else
         {
-            while (filesReadinessStatus[numberOfFiles - 1] == readiness.Downloaded)
-                await Task.Delay(1);
+            // If file isn't present yet (or failed), retry later
+            await Task.Delay(1);
         }
 
-        loadedMeshes.Enqueue(tempMesh);
-
-        // ✅ Só agora faz sentido atualizar estado/contadores
+        // Kept in original behavior: decrement + mark Loaded here
         downloadedCount -= 1;
         filesReadinessStatus[position] = readiness.Loaded;
     }
-
-    //private async void ReadSingleMeshFromFile(string fileName, int position)
-    //{
-    //    byte[] stream = ReadStreamFromDownloadedFile(fileName);
-
-    //    if (stream != null)
-    //    {
-    //        var meshDataArray = Mesh.AllocateWritableMeshData(1); // Pede à Unity um bloco de memória p/ escrever dados de uma mesh. 1 significa: “vou preencher uma mesh”.
-    //        await DracoDecoder.DecodeMesh(meshDataArray[0], stream);
-
-    //        Mesh tempMesh = new Mesh();
-    //        Mesh.ApplyAndDisposeWritableMeshData(meshDataArray, tempMesh);
-
-    //        // Keep decode in order: wait until previous frames have left "Downloaded"
-    //        if (position != 0)
-    //        {
-    //            while (filesReadinessStatus[position - 1] == readiness.Downloaded)
-    //                await Task.Delay(1);
-    //        }
-    //        else
-    //        {
-    //            while (filesReadinessStatus[numberOfFiles - 1] == readiness.Downloaded)
-    //                await Task.Delay(1);
-    //        }
-
-    //        loadedMeshes.Enqueue(tempMesh);
-    //    }
-    //    else
-    //    {
-    //        // If file isn't present yet (or failed), retry later
-    //        await Task.Delay(1);
-    //    }
-
-    //    downloadedCount -= 1;
-    //    filesReadinessStatus[position] = readiness.Loaded;
-    //}
 
     private byte[] ReadStreamFromDownloadedFile(string fileName)
     {
@@ -259,14 +230,12 @@ public class DracoCurlOldV2 : MonoBehaviour
     }
 
     // =========================================================
-    // Play
+    // Play (FPS pacing)
     // =========================================================
     private async void PlaySingleFile()
     {
-        // Render the current mesh (VFX/particles)
         particlesScript.Set(currentMesh);
 
-        // Maintain target FPS
         float elapsedS = Time.realtimeSinceStartup - startTime;
         float elapsedMS = elapsedS * 1000f;
 
@@ -285,83 +254,23 @@ public class DracoCurlOldV2 : MonoBehaviour
     }
 
     // =========================================================
-    // Public controls
+    // Public controls (UI)
     // =========================================================
-    //public void SetNewIP(string newIP) { HostPath = newIP; ResetHostPath(); }
-    //public void SetNewPort(string newPort) { _port = newPort; ResetHostPath(); }
-
-    //public void SetPortFromSliceList(int slice)
-    //{
-    //    if (sliceAddressList == null || sliceAddressList.Length == 0) return;
-    //    currentSlice = Mathf.Clamp(slice, 0, sliceAddressList.Length - 1);
-    //    _port = sliceAddressList[currentSlice].ToString();
-    //    ResetHostPath();
-    //}
+    public void SetNewIP(string newIP) { HostPath = newIP; ResetHostPath(); }
+    public void SetNewPort(string newPort) { _port = newPort; ResetHostPath(); }
 
     public void SetPortFromSliceList(int slice)
     {
         currentSlice = slice;
         _port = sliceAddressList[currentSlice].ToString();
         ResetHostPath();
-        Debug.Log($"Estou aqui!");
-        Debug.Log($"path: {fullPath}");
-        Debug.Log($"[CLICK] haltDownloading={haltDownloading} downloadedCount={downloadedCount} " +
-          $"loadedMeshes={loadedMeshes?.Count ?? -1} downloadingFrom={downloadingFilesFrom}");
-        //_changer.ChangeSlice(currentSlice);
     }
 
-    //private int _sessionId = 0; // invalida tasks async antigas
-
-    //public void SwitchSlice(int slice)
-    //{
-    //    Debug.Log($"[SwitchSlice] slice={slice} (before) haltDownloading={haltDownloading} downloadedCount={downloadedCount} loadedMeshes={loadedMeshes?.Count}");
-
-    //    // 1) invalida decodes/plays antigos (se você adicionar a checagem no async)
-    //    _sessionId++;
-
-    //    // 2) mata o curl atual: libera o "haltDownloading preso"
-    //    appLauncher?.KillProcess();
-
-    //    // 3) reseta runtime state do pipeline
-    //    haltDownloading = false;
-    //    playerReady = true;
-    //    downloadedCount = 0;
-
-    //    downloadingFilesFrom = 0;
-    //    currentLoadedNumber = 0;
-    //    currentPlayingNumber = 0;
-
-    //    // 4) limpa fila de meshes (senão mistura slice antigo com novo)
-    //    if (loadedMeshes != null)
-    //    {
-    //        while (loadedMeshes.Count > 0)
-    //        {
-    //            var m = loadedMeshes.Dequeue();
-    //            if (m != null) Destroy(m);
-    //        }
-    //    }
-
-    //    // 5) reseta estados
-    //    if (filesReadinessStatus != null)
-    //    {
-    //        for (int i = 0; i < filesReadinessStatus.Length; i++)
-    //            filesReadinessStatus[i] = readiness.None;
-    //    }
-
-    //    // 6) troca slice/porta e atualiza fullPath
-    //    SetPortFromSliceList(slice);
-
-    //    // 7) (opcional) re-gerar dracoFiles/loadedFilesMaxSize (se você quer “hard reset”)
-    //    UpdateDracoFiles();
-
-    //    Debug.Log($"[SwitchSlice] (after) haltDownloading={haltDownloading} downloadedCount={downloadedCount} loadedMeshes={loadedMeshes?.Count} fullPath={fullPath}");
-    //}
-
-    //public void SetQualityFromQualityList(int quality)
-    //{
-    //    currentFiles = Mathf.Clamp(quality, 0, _files.Length - 1);
-    //    ResetHostPath();
-    //}
+    public void SetQualityFromQualityList(int quality)
+    {
+        currentFiles = Mathf.Clamp(quality, 0, _files.Length - 1);
+        ResetHostPath();
+    }
 
     public void Reconnect()
     {
@@ -369,11 +278,14 @@ public class DracoCurlOldV2 : MonoBehaviour
         // Original code did not reset pointers aggressively here.
     }
 
-    //public void ChangeFramerate(string newFramerate)
-    //{
-    //    if (int.TryParse(newFramerate, out int outFps))
-    //        FPS = outFps;
-    //}
+    public void ChangeFramerate(string newFramerate)
+    {
+        if (int.TryParse(newFramerate, out int outFps))
+        {
+            FPS = outFps;
+            inverseFPSms = 1000f / Mathf.Max(1f, FPS);
+        }
+    }
 
     // =========================================================
     // Main loop (single-batch download, in-order decode, in-order play)
@@ -383,19 +295,20 @@ public class DracoCurlOldV2 : MonoBehaviour
         if (dracoFiles == null) return;
 
         // 1) Download: if buffer not full and not already downloading, start a curl batch
-        if (downloadedCount < loadedFilesMaxSize && !haltDownloading && filesReadinessStatus[downloadingFilesFrom] == readiness.None)
+        if (downloadedCount < loadedFilesMaxSize &&
+            !haltDownloading &&
+            filesReadinessStatus[downloadingFilesFrom] == readiness.None)
         {
             haltDownloading = true;
 
             string appArgs = "--http3 --parallel";
-
             for (int i = downloadingFilesFrom; i < downloadingFilesFrom + batchSize && i < numberOfFiles; i++)
             {
                 string filename = dracoFiles[i];
                 string outPath = Path.Combine(Application.persistentDataPath, "Downloads", filename);
                 string url = fullPath + filename;
 
-                // Note: quoting paths is safer, but kept close to original behavior
+                // Note: quoting paths is safer; keeping close to original behavior
                 appArgs += $" -o {outPath} {url}";
             }
 
