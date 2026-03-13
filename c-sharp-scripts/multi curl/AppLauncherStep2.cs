@@ -4,6 +4,7 @@ using System.IO;
 using System.Diagnostics;
 using System.Threading.Tasks;
 using System.Collections.Generic;
+using Debug = UnityEngine.Debug;
 
 /// <summary>
 /// STEP 2 launcher:

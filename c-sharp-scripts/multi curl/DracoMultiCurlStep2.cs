@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
@@ -20,7 +20,7 @@ public class DracoMultiCurlStep2 : MonoBehaviour
     private int currentSlice = 0;
 
     private const string HttpPrefix = "https://";
-    private string _port = "5002";
+    private string _port = "443";
     private string fullPath;
 
     // =========================================================
