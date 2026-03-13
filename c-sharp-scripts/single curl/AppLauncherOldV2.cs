@@ -1,8 +1,8 @@
-using UnityEngine;
-using System;
-using System.IO;
-using System.Diagnostics;
-using System.Threading.Tasks;
+using UnityEngine;             // Permite usar MonoBehaviour, Application.persistentDataPath, Debug.Log, etc.
+using System;                  // Tipos base do .NET, Exception, EventArgs, etc.
+using System.IO;               // Tipos de I/O como StreamWriter.
+using System.Diagnostics;      // Onde fica Process (rodar executáveis externos).
+using System.Threading.Tasks;  // Para usar Task.Delay, que é uma forma de esperar sem bloquear a thread principal.
 
 public class AppLauncherOldV2 : MonoBehaviour
 {
@@ -50,8 +50,8 @@ public class AppLauncherOldV2 : MonoBehaviour
             process.StartInfo.CreateNoWindow = true;
 
             // Hook stdout/stderr events
-            process.OutputDataReceived += new DataReceivedEventHandler(DataReceived);
-            process.ErrorDataReceived += new DataReceivedEventHandler(ErrorReceived);
+            process.OutputDataReceived += new DataReceivedEventHandler(DataReceived);  // Quando o processo escrever uma linha em stdout, chama seu método DataReceived.
+            process.ErrorDataReceived += new DataReceivedEventHandler(ErrorReceived);  // not main thread
 
             // Start process
             process.Start();
