@@ -109,8 +109,8 @@ public class DracoMultiCurlStep2 : MonoBehaviour
 
         Directory.CreateDirectory(Path.Combine(Application.persistentDataPath, "Downloads"));
 
-        ResetHostPath();
-        UpdateDracoFiles();
+        //ResetHostPath();
+        //UpdateDracoFiles();
 
         // pointers
         currentLoadedNumber = 0;
@@ -214,29 +214,32 @@ public class DracoMultiCurlStep2 : MonoBehaviour
             // On failure, revert batch indices so they can be retried
             for (int i = batchStart; i < batchStart + batchCount && i < numberOfFiles; i++)
                 filesReadinessStatus[i] = readiness.None;
-
+            Debug.Log($"currentSlice: {currentSlice}");
+            //SwitchSliceHard(currentSlice);
             return;
+
+
         }
 
         int marked = 0;
         for (int i = batchStart; i < batchStart + batchCount && i < numberOfFiles; i++)
         {
             // Only count those that were still marked Downloading
-            if (filesReadinessStatus[i] == readiness.Downloading)
-            {
+            //if (filesReadinessStatus[i] == readiness.Downloading)
+            //{
                 filesReadinessStatus[i] = readiness.Downloaded;
                 marked++;
-            }
-            else
-            {
+            //}
+            //else
+            //{
                 // If state drifted, still mark as Downloaded to keep system moving (Step 2 minimal)
-                filesReadinessStatus[i] = readiness.Downloaded;
-                marked++;
-            }
+            //    filesReadinessStatus[i] = readiness.Downloaded;
+            //    marked++;
+            //}
         }
 
         downloadedCount += marked;
-        // Debug.Log($"[AdvanceBatch] OK start={batchStart} count={batchCount} marked={marked} downloadedCount={downloadedCount} activeBatches={activeBatches}");
+        //Debug.Log($"[AdvanceBatch] OK start={batchStart} count={batchCount} marked={marked} downloadedCount={downloadedCount} activeBatches={activeBatches}");
     }
 
     // =========================================================
@@ -294,7 +297,7 @@ public class DracoMultiCurlStep2 : MonoBehaviour
         // Se trocou slice enquanto eu estava decodificando, descarta o resultado
         if (mySession != _sessionId || _isSwitchingSlice)
         {
-            // Não mexe em contadores/estados, não enfileira mesh
+            // Nï¿½o mexe em contadores/estados, nï¿½o enfileira mesh
             await Task.Delay(1);
             return;
         }
@@ -448,7 +451,7 @@ public class DracoMultiCurlStep2 : MonoBehaviour
         if (dracoFiles == null || dracoFiles.Length != numberOfFiles)
             UpdateDracoFiles();
 
-        // 9) Reinicia temporização do player
+        // 9) Reinicia temporizaï¿½ï¿½o do player
         startTime = Time.realtimeSinceStartup;
 
         _isSwitchingSlice = false;

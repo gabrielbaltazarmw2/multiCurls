@@ -119,7 +119,7 @@ public class AppLauncherStep2 : MonoBehaviour
     private void Update()
     {
         // Deliver all pending completions on main thread
-        while (true)
+        while (_pending.Count > 0)
         {
             Completion c;
             lock (_lock)
@@ -137,6 +137,7 @@ public class AppLauncherStep2 : MonoBehaviour
         {
             var p = _running[i];
             if (p == null) { _running.RemoveAt(i); continue; }
+            /*
             try
             {
                 if (p.HasExited) _running.RemoveAt(i);
@@ -145,6 +146,7 @@ public class AppLauncherStep2 : MonoBehaviour
             {
                 _running.RemoveAt(i);
             }
+            */
         }
     }
 
