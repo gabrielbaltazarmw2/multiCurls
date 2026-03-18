@@ -74,6 +74,9 @@ public class DracoMultiCurlStep2 : MonoBehaviour
     private enum readiness { None, Downloading, Downloaded, Loaded }
     [SerializeField] private readiness[] filesReadinessStatus;
 
+    private bool _isSwitchingSlice = false;
+    private int _sessionId = 0; // incrementa a cada troca "hard" para invalidar tasks antigas
+
     // =========================================================
     // Unity lifecycle
     // =========================================================
@@ -200,6 +203,8 @@ public class DracoMultiCurlStep2 : MonoBehaviour
     // Called by AppLauncherStep2 (on main thread)
     public void AdvanceBatch(int batchStart, int batchCount, int exitCode, string reason)
     {
+        if (_isSwitchingSlice) return;
+
         activeBatches = Mathf.Max(0, activeBatches - 1);
 
         if (exitCode != 0)
@@ -237,36 +242,85 @@ public class DracoMultiCurlStep2 : MonoBehaviour
     // =========================================================
     // Decode (unchanged from Step 1; still FIFO)
     // =========================================================
+    //private async void ReadSingleMeshFromFile(string fileName, int position)
+    //{
+    //    byte[] stream = ReadStreamFromDownloadedFile(fileName);
+
+    //    if (stream != null)
+    //    {
+    //        var meshDataArray = Mesh.AllocateWritableMeshData(1);
+    //        await DracoDecoder.DecodeMesh(meshDataArray[0], stream);
+
+    //        Mesh tempMesh = new Mesh();
+    //        Mesh.ApplyAndDisposeWritableMeshData(meshDataArray, tempMesh);
+
+    //        // Keep enqueue roughly in order (same as before)
+    //        if (position != 0)
+    //        {
+    //            while (filesReadinessStatus[position - 1] == readiness.Downloaded)
+    //                await Task.Delay(1);
+    //        }
+    //        else
+    //        {
+    //            while (filesReadinessStatus[numberOfFiles - 1] == readiness.Downloaded)
+    //                await Task.Delay(1);
+    //        }
+
+    //        loadedMeshes.Enqueue(tempMesh);
+    //    }
+    //    else
+    //    {
+    //        await Task.Delay(1);
+    //    }
+
+    //    downloadedCount -= 1;
+    //    filesReadinessStatus[position] = readiness.Loaded;
+    //}
+
     private async void ReadSingleMeshFromFile(string fileName, int position)
     {
+        int mySession = _sessionId;
+
         byte[] stream = ReadStreamFromDownloadedFile(fileName);
-
-        if (stream != null)
+        if (stream == null)
         {
-            var meshDataArray = Mesh.AllocateWritableMeshData(1);
-            await DracoDecoder.DecodeMesh(meshDataArray[0], stream);
+            await Task.Delay(1);
+            return;
+        }
 
-            Mesh tempMesh = new Mesh();
-            Mesh.ApplyAndDisposeWritableMeshData(meshDataArray, tempMesh);
+        var meshDataArray = Mesh.AllocateWritableMeshData(1);
+        await DracoDecoder.DecodeMesh(meshDataArray[0], stream);
 
-            // Keep enqueue roughly in order (same as before)
-            if (position != 0)
+        // Se trocou slice enquanto eu estava decodificando, descarta o resultado
+        if (mySession != _sessionId || _isSwitchingSlice)
+        {
+            // Não mexe em contadores/estados, não enfileira mesh
+            await Task.Delay(1);
+            return;
+        }
+
+        Mesh tempMesh = new Mesh();
+        Mesh.ApplyAndDisposeWritableMeshData(meshDataArray, tempMesh);
+
+        // Gate de ordem (igual)
+        if (position != 0)
+        {
+            while (filesReadinessStatus[position - 1] == readiness.Downloaded)
             {
-                while (filesReadinessStatus[position - 1] == readiness.Downloaded)
-                    await Task.Delay(1);
+                if (mySession != _sessionId || _isSwitchingSlice) { Destroy(tempMesh); return; }
+                await Task.Delay(1);
             }
-            else
-            {
-                while (filesReadinessStatus[numberOfFiles - 1] == readiness.Downloaded)
-                    await Task.Delay(1);
-            }
-
-            loadedMeshes.Enqueue(tempMesh);
         }
         else
         {
-            await Task.Delay(1);
+            while (filesReadinessStatus[numberOfFiles - 1] == readiness.Downloaded)
+            {
+                if (mySession != _sessionId || _isSwitchingSlice) { Destroy(tempMesh); return; }
+                await Task.Delay(1);
+            }
         }
+
+        loadedMeshes.Enqueue(tempMesh);
 
         downloadedCount -= 1;
         filesReadinessStatus[position] = readiness.Loaded;
@@ -348,11 +402,64 @@ public class DracoMultiCurlStep2 : MonoBehaviour
         }
     }
 
+    public void SwitchSliceHard(int slice)
+    {
+        _isSwitchingSlice = true;
+        _sessionId++; // invalida tasks async antigas (decode)
+
+        // 1) Mata todos os curls em andamento
+        appLauncher?.KillAllProcesses();
+
+        // 2) Reseta scheduler/contadores
+        activeBatches = 0;
+        nextDownloadIndex = 0;
+        downloadedCount = 0;
+
+        // 3) Reseta ponteiros
+        currentLoadedNumber = 0;
+        currentPlayingNumber = 0;
+        playerReady = true;
+
+        // 4) Limpa fila de meshes (evita misturar slice antigo com novo)
+        if (loadedMeshes != null)
+        {
+            while (loadedMeshes.Count > 0)
+            {
+                var m = loadedMeshes.Dequeue();
+                if (m != null) Destroy(m);
+            }
+        }
+
+        // 5) Limpa currentMesh
+        if (currentMesh != null) DestroyImmediate(currentMesh);
+        currentMesh = new Mesh();
+
+        // 6) Reseta estados por frame
+        if (filesReadinessStatus != null)
+        {
+            for (int i = 0; i < filesReadinessStatus.Length; i++)
+                filesReadinessStatus[i] = readiness.None;
+        }
+
+        // 7) Troca slice/porta e atualiza URL base
+        SetPortFromSliceList(slice);
+
+        // 8) Garante lista de arquivos configurada (sem depender do OnEnable)
+        if (dracoFiles == null || dracoFiles.Length != numberOfFiles)
+            UpdateDracoFiles();
+
+        // 9) Reinicia temporização do player
+        startTime = Time.realtimeSinceStartup;
+
+        _isSwitchingSlice = false;
+    }
+
     // =========================================================
     // Main loop (STEP 2: multi-batch download + same decode/play)
     // =========================================================
     private void Update()
     {
+        if (_isSwitchingSlice) return;
         if (dracoFiles == null) return;
 
         // 1) Download (multi-curl scheduling)
