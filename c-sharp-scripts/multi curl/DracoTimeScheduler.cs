@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
@@ -20,7 +20,7 @@ public class DracoTimeScheduler : MonoBehaviour
     private int currentSlice = 0;
 
     private const string HttpPrefix = "https://";
-    private string _port = "443";
+    private string _port = "5001";
     private string fullPath;
 
     // =========================================================
